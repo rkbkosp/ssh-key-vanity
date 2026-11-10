@@ -1,0 +1,27 @@
+# Only source/documentation directories are eligible at the repository root.
+# Arbitrarily named keys, local logs and build outputs remain untracked.
+/*
+!/.gitignore
+!/LICENSE
+!/README.md
+!/THIRD_PARTY_NOTICES.md
+!/run.sh
+!/src/
+!/scripts/
+!/tools/
+!/tests/
+!/docs/
+!/vendor/
+
+# Keys and local artifacts inside source directories are never source files.
+*.pem
+*.key
+*.pub
+id_*
+*_key
+*_profile_hit
+.DS_Store
+*.o
+*.air
+*.metallib
+*.trace/
