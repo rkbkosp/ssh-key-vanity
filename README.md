@@ -8,26 +8,39 @@
 
 ## 安装与运行
 
-需要 macOS、Xcode Command Line Tools 和 libsodium，无 Python 依赖。Metal 使用系统运行时编译器，无需额外下载离线 Metal Toolchain。
+需要 macOS、Xcode Command Line Tools 和 libsodium。**M4 默认推荐批量求逆 GPU＋4 个 CPU 工作线程**，每批 16384 个、线程组 64、两个在途批次。推荐版目前由实验生成工具构建，构建时需要 uv 管理的 Python 3.12；编译后的程序运行不依赖 Python。Metal 使用系统运行时编译器，无需额外下载离线 Metal Toolchain。
 
 ```sh
 xcode-select --install   # 已安装 Command Line Tools 时可跳过
-brew install libsodium
+brew install libsodium uv
 cd ssh-key-vanity         # 进入源码目录
 
-# M4 推荐：每批 16384 个，两个在途批次
-./run.sh --suffix 2778 --inflight 2 --output ./my_key
+# 首次使用：生成并编译推荐版（不执行搜索或测速）
+uv run --no-project --python 3.12 tools/compare_variants.py \
+  --prepare --variants invert-hybrid4
+
+# 推荐启动命令：CPU 与 GPU 同时搜索 912778
+SSH_VANITY_ROOT="$PWD/build/variant-experiments/invert-hybrid4" \
+  ./build/variant-experiments/invert-hybrid4/ssh-vanity \
+  --backend metal --suffix 912778 --output ./912778_key \
+  --batch 16384 --threadgroup 64 --inflight 2
 ```
 
-首次运行自动编译。命中后生成 `my_key` 与 `my_key.pub`，公钥不含注释；已有路径会报错，输出目录需要提前存在。私钥权限为 `0600`，默认无口令。如需口令：
+后续直接执行启动命令即可；源码更新后重新执行构建命令。四个 CPU 工作线程已内置于 `invert-hybrid4`，无需额外参数。请保留上面的 `--inflight 2` 和 `--threadgroup 64`；该实验版要求批量大小为 64 的倍数。
+
+命中后生成 `912778_key` 与 `912778_key.pub`，公钥不含注释；已有路径会报错，输出目录需要提前存在。私钥权限为 `0600`，默认无口令。如需口令：
 
 ```sh
-ssh-keygen -p -f ./my_key
+ssh-keygen -p -f ./912778_key
 ```
 
-手动构建可用 `./scripts/build.sh`。如 libsodium 位于其他目录，通过 `SODIUM_ROOT` 指定其安装前缀。
+**散热提示：本机用户实测反馈，推荐配置运行时整机功耗可接近满载。** 长时间搜索请保持良好通风和散热，避免堵塞散热口；温度过高时可按 Ctrl-C 停止，改善散热后重新运行。重启会使用新的随机候选，不保留搜索进度。
+
+原版纯 Metal / CPU 入口仍为 `./run.sh`，首次运行自动编译，无 Python 依赖；手动构建可用 `./scripts/build.sh`。原版支持用 `SODIUM_ROOT` 指定 libsodium 前缀；实验生成工具目前使用 `/opt/homebrew/opt/libsodium`。
 
 ## 参数
+
+下表列出原版 `./run.sh` 的默认值；推荐版使用上文显式指定的配置，并额外并行运行 4 个 CPU 工作线程。`./run.sh` 本身的默认行为未改变。
 
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -58,19 +71,29 @@ Ctrl-C 或 SIGTERM 请求停止；在途 GPU 批次完成后清理退出。已�
 | --- | ---: |
 | CPU，8 个工作线程 | 约 49 万个/秒 |
 | Metal，单个在途批次 | 约 131 万个/秒 |
-| Metal，两个在途批次 | **约 297 万个/秒** |
+| Metal，两个在途批次 | 约 297 万个/秒 |
 | Metal，三个在途批次 | 约 301 万个/秒 |
+| GPU 批量求逆，两个在途批次 | 约 350～360 万个/秒 |
+| GPU 批量求逆＋2 个 CPU 工作线程 | 约 363 万个/秒 |
+| **GPU 批量求逆＋4 个 CPU 工作线程（推荐）** | **约 376～382 万个/秒** |
+| GPU 批量求逆＋6 个 CPU 工作线程 | 约 379 万个/秒 |
+| GPU 批量求逆＋8 个 CPU 工作线程 | 约 353 万个/秒 |
 
 双缓冲在本实现的短测中约提速 2.26 倍。它同时准备后续批次和执行 GPU 工作；每个批次独占种子、标量和结果缓冲区，完成后才复用。
 
-四位后缀平均需要约 1678 万次尝试；六位约 687 亿次，在 297 万个/秒下平均约 **6.4 小时**。八位仍平均需要约 **3 年**。这些是概率估算，不能保证在平均时间内找到结果。
+4 与 6 个 CPU 工作线程的吞吐接近，推荐占用更少的 4 线程；8 线程增加 CPU 候选数的同时降低了 GPU 吞吐，总速度反而下降。查表改写和随机数预取没有显示稳定收益。这些结果来自本机分轮短测，不代表持续满载速度保证。
 
-数据、测量限制与复现命令见 [M4 性能记录](docs/BENCHMARKS.md)。
+真实搜索 `2778` 时，推荐版包含启动、自检、校验和写盘后的端到端吞吐约为 366～377 万个/秒。共 68 次真实命中及 5 次 CPU 专用短后缀验证通过 OpenSSH 回读和签名验签；命中耗时受随机性影响，应结合完成候选数比较速度。
+
+四位后缀平均需要约 1678 万次尝试；六位约 687 亿次，按 380 万个/秒估算，`912778` 平均约 **5 小时**。八位仍平均需要约 **2.3 年**。这些是概率估算，不能保证在平均时间内找到结果。
+
+优化版数据、测量限制与复现命令见 [优化实验记录](docs/VARIANT-EXPERIMENTS-M4.md)，原版数据见 [M4 性能记录](docs/BENCHMARKS.md)。
 
 ## 密钥生成与验证
 
 - 每个候选使用 libsodium 的系统安全随机源生成全新的 32 字节种子。候选种子由 `sodium_malloc` 管理；不记录种子、不保存恢复文件。
 - Metal 模式由 CPU 执行 SHA-512/clamp，GPU 执行 Ed25519 基点乘法、公钥编码和后缀匹配。CPU 模式使用 libsodium，固定 8 个工作线程。
+- 推荐版 GPU 每 64 个候选共享一次域求逆，并额外用 4 个 CPU 工作线程独立生成完整 Ed25519 候选；任一侧命中后，由主线程统一验证并保存唯一一对密钥。
 - 启动 Metal 时，将 1 个 RFC 8032 测试种子与 1023 个随机种子的 GPU 公钥逐个与 libsodium 比较，再验证 1～8 位后缀匹配路径。
 - 命中后，CPU 从种子重新生成公钥，使用 Foundation 的 Base64 编码独立匹配，并完成签名/验签，最后才写入最终一对密钥。
 - 正常批次完成后清零候选种子和共享标量缓冲区；命中、中断或超时后，等待已经提交的 GPU 工作收尾，不再提交新批次。
@@ -90,9 +113,9 @@ Ctrl-C 或 SIGTERM 请求停止；在途 GPU 批次完成后清理退出。已�
 src/       主程序与搜索内核
 vendor/    Ed25519 ref10 运算及原始许可
 scripts/   构建、性能诊断入口
-tools/     性能诊断源码
+tools/     性能诊断源码与优化版生成、比较工具
 tests/     OpenSSH 回验
-docs/      M4 性能记录与无敏感信息的 CSV
+docs/      M4 性能记录与无密钥数据的 CSV / JSONL
 build/     本地构建产物，Git 忽略
 .local/    本地原始证据，Git 忽略
 ```
